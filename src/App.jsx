@@ -806,6 +806,16 @@ function Rooms({data,onRefresh,showAlert}){
     await shAppend(SH.rooms,[uid("R"),form.roomNumber,form.floor,form.type,form.rent,"vacant","",form.waterRate,form.electricRate]);
     showAlert("เพิ่มห้องพักเรียบร้อย ✓"); setModal(null); setForm(empty); onRefresh();
   }
+  async function edit(){
+    if(!form.roomNumber||!form.rent){showAlert("กรุณากรอกเลขห้องและค่าเช่า","err");return;}
+    await shUpdate(SH.rooms,form.id,{roomNumber:form.roomNumber,floor:form.floor,type:form.type,rent:form.rent,waterRate:form.waterRate,electricRate:form.electricRate});
+    showAlert("แก้ไขห้องพักเรียบร้อย ✓"); setModal(null); setForm(empty); onRefresh();
+  }
+  async function del(){
+    if(!confirm(`ต้องการลบห้อง ${modal.roomNumber} ใช่หรือไม่?`)) return;
+    await shDelete(SH.rooms,modal.id);
+    showAlert("ลบห้องพักเรียบร้อย ✓"); setModal(null); onRefresh();
+  }
   return(
     <div className="pg">
       <div style={{padding:"14px 14px 0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -829,7 +839,7 @@ function Rooms({data,onRefresh,showAlert}){
         <Modal title="➕ เพิ่มห้องพัก" onClose={()=>setModal(null)}>
           <div className="fg"><label className="fl">เลขห้อง *</label><input className="fi" value={form.roomNumber} onChange={e=>setForm({...form,roomNumber:e.target.value})} placeholder="101"/></div>
           <div className="fg"><label className="fl">ชั้น</label><input className="fi" value={form.floor} onChange={e=>setForm({...form,floor:e.target.value})} placeholder="1"/></div>
-          <div className="fg"><label className="fl">ประเภท</label><select className="fs" value={form.type} onChange={e=>setForm({...form,type:e.target.value})}><option>สตูดิโอ</option><option>1 ห้องนอน</option><option>2 ห้องนอน</option></select></div>
+          <div className="fg"><label className="fl">ประเภท</label><select className="fs" value={form.type} onChange={e=>setForm({...form,type:e.target.value})}><option>ห้องปกติ</option><option>ห้องมุม</option></select></div>
           <div className="fg"><label className="fl">ค่าเช่า (฿/เดือน) *</label><input className="fi" type="number" value={form.rent} onChange={e=>setForm({...form,rent:e.target.value})} placeholder="3500"/></div>
           <div className="fg2">
             <div className="fg"><label className="fl">ค่าน้ำ (฿/หน่วย)</label><input className="fi" type="number" value={form.waterRate} onChange={e=>setForm({...form,waterRate:e.target.value})}/></div>
@@ -838,6 +848,22 @@ function Rooms({data,onRefresh,showAlert}){
           <div className="btn-row">
             <button className="btn btn-out" onClick={()=>setModal(null)}>ยกเลิก</button>
             <button className="btn btn-pri" onClick={add}>บันทึก</button>
+          </div>
+        </Modal>
+      )}
+      {modal==="edit"&&(
+        <Modal title="✏️ แก้ไขห้องพัก" onClose={()=>setModal(null)}>
+          <div className="fg"><label className="fl">เลขห้อง *</label><input className="fi" value={form.roomNumber} onChange={e=>setForm({...form,roomNumber:e.target.value})} placeholder="101"/></div>
+          <div className="fg"><label className="fl">ชั้น</label><input className="fi" value={form.floor} onChange={e=>setForm({...form,floor:e.target.value})} placeholder="1"/></div>
+          <div className="fg"><label className="fl">ประเภท</label><select className="fs" value={form.type} onChange={e=>setForm({...form,type:e.target.value})}><option>ห้องปกติ</option><option>ห้องมุม</option></select></div>
+          <div className="fg"><label className="fl">ค่าเช่า (฿/เดือน) *</label><input className="fi" type="number" value={form.rent} onChange={e=>setForm({...form,rent:e.target.value})} placeholder="3500"/></div>
+          <div className="fg2">
+            <div className="fg"><label className="fl">ค่าน้ำ (฿/หน่วย)</label><input className="fi" type="number" value={form.waterRate} onChange={e=>setForm({...form,waterRate:e.target.value})}/></div>
+            <div className="fg"><label className="fl">ค่าไฟ (฿/หน่วย)</label><input className="fi" type="number" value={form.electricRate} onChange={e=>setForm({...form,electricRate:e.target.value})}/></div>
+          </div>
+          <div className="btn-row">
+            <button className="btn btn-out" onClick={()=>setModal(null)}>ยกเลิก</button>
+            <button className="btn btn-pri" onClick={edit}>บันทึก</button>
           </div>
         </Modal>
       )}
@@ -850,7 +876,10 @@ function Rooms({data,onRefresh,showAlert}){
             <div><b>สถานะ:</b> <span className={`badge ${sB[modal.status]}`}>{sL[modal.status]}</span></div>
             {data.tenants.find(t=>t.roomId===modal.id)&&<div><b>ผู้เช่า:</b> {data.tenants.find(t=>t.roomId===modal.id)?.name}</div>}
           </div>
-          <button className="btn btn-out btn-full" style={{marginTop:14}} onClick={()=>setModal(null)}>ปิด</button>
+          <div className="btn-row">
+            <button className="btn btn-acc" onClick={()=>{setForm(modal);setModal("edit")}}>แก้ไข</button>
+            <button className="btn btn-err" onClick={del}>ลบ</button>
+          </div>
         </Modal>
       )}
     </div>
