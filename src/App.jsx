@@ -807,8 +807,11 @@ function Rooms({data,onRefresh,showAlert}){
     showAlert("เพิ่มห้องพักเรียบร้อย ✓"); setModal(null); setForm(empty); onRefresh();
   }
   async function edit(){
+    showAlert("เริ่มแก้ไขห้องพัก", "info");
     if(!form.roomNumber||!form.rent){showAlert("กรุณากรอกเลขห้องและค่าเช่า","err");return;}
+    showAlert("กำลังส่งข้อมูลไปเซิร์ฟเวอร์", "info");
     const res = await shUpdate(SH.rooms,form.id,[form.roomNumber,form.floor,form.type,form.rent,form.status||"vacant",form.tenantId||"",form.waterRate,form.electricRate]);
+    showAlert("ได้รับผลลัพธ์: " + JSON.stringify(res), "info");
     if(!res.ok){showAlert("เกิดข้อผิดพลาดในการบันทึกข้อมูล","err");return;}
     showAlert("แก้ไขห้องพักเรียบร้อย ✓"); setModal(null); setForm(empty); onRefresh();
   }
