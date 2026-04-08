@@ -808,9 +808,9 @@ function Rooms({data,onRefresh,showAlert}){
   }
   async function edit(){
     if(!form.roomNumber||!form.rent){showAlert("กรุณากรอกเลขห้องและค่าเช่า","err");return;}
-    // ลบแล้วเพิ่มใหม่แทนการ update
+    // ลบแล้วเพิ่มใหม่แทนการ update (รักษา ID เดิม)
     await shDelete(SH.rooms,form.id);
-    await shAppend(SH.rooms,[form.id,form.roomNumber,form.floor,form.type,form.rent,form.status||"vacant",form.tenantId||"",form.waterRate,form.electricRate]);
+    await shAppend(SH.rooms,[form.id,form.roomNumber,form.floor,form.type,form.rent,form.status||"vacant",form.tenantId||"",form.waterRate||20,form.electricRate||7]);
     showAlert("แก้ไขห้องพักเรียบร้อย ✓"); setModal(null); setForm(empty); onRefresh();
   }
   async function del(){
