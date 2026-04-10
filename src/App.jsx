@@ -471,8 +471,25 @@ function ImportData({data,onRefresh,showAlert}){
           get("color")||PALETTE[0],
           get("balance")||0,
         ];
+        if(type==="tenants") {
+          const roomNumber = get("roomNumber","roomnumber").trim();
+          const room = data.rooms.find(r => String(r.roomNumber).trim() === String(roomNumber));
+          if (!room) {
+            showAlert(`ไม่พบห้อง ${roomNumber} ในระบบ`, "err");
+            return null; // ข้ามรายการนี้
+          }
+          return [
+            uid("T"),
+            get("name"),
+            get("phone"),
+            room.id, // ใช้ roomId จากระบบ
+            roomNumber,
+            get("moveIn","movein"),
+            get("idCard","idcard"),
+          ];
+        }
         return [];
-      });
+      }).filter(item => item !== null); // กรองรายการที่เป็น null ออก
       await bulkAppend(SH[type],items);
       showAlert(`นำเข้า ${items.length} รายการสำเร็จ ✓`);
       setSource(prev=>({...prev,[type]:""}));
@@ -488,7 +505,7 @@ function ImportData({data,onRefresh,showAlert}){
     <div className="pg">
       <div style={{padding:"14px 14px 0"}}>
         <div style={{fontSize:19,fontWeight:700,color:T.pri}}>นำเข้าข้อมูลจำนวนมาก</div>
-        <div style={{fontSize:13,color:T.muted,marginTop:6}}>วาง CSV แล้วกดนำเข้า สามารถใช้งานกับ ห้องพัก รายรับ รายจ่าย และบัญชีได้</div>
+        <div style={{fontSize:13,color:T.muted,marginTop:6}}>วาง CSV แล้วกดนำเข้า สามารถใช้งานกับ ห้องพัก ผู้เช่า รายรับ รายจ่าย และบัญชีได้</div>
       </div>
 
       <div className="card">
@@ -511,7 +528,7 @@ function ImportData({data,onRefresh,showAlert}){
 
       <div className="card">
         <div className="sec-hdr">ผู้เช่า</div>
-        <div className="fg"><label className="fl">รูปแบบ CSV</label><textarea className="fta" value={source.tenants} onChange={e=>setSource({...source,tenants:e.target.value})} placeholder="name,phone,roomId,roomNumber,moveIn,idCard&#10;สมชาย ใจดี,081-234-5678,R001,101,01/01/2568,1-2345-67890-12-3"/></div>
+        <div className="fg"><label className="fl">รูปแบบ CSV</label><textarea className="fta" value={source.tenants} onChange={e=>setSource({...source,tenants:e.target.value})} placeholder="name,phone,roomNumber,moveIn,idCard&#10;สมชาย ใจดี,081-234-5678,101,01/01/2568,1-2345-67890-12-3"/></div>
         <button className="btn btn-acc btn-full" onClick={()=>importRows("tenants")} disabled={loading}>นำเข้าผู้เช่า</button>
       </div>
     </div>
