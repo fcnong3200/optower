@@ -48,6 +48,13 @@ html,body{font-family:'Sarabun',sans-serif;background:${T.bg};color:${T.txt};fon
 .bni-ic{font-size:23px;line-height:1}
 .card{background:${T.card};border-radius:16px;box-shadow:${T.sh};padding:20px;margin:14px 14px 0}
 .card-t{font-size:19px;font-weight:700;color:${T.pri};margin-bottom:14px}
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:1000}
+.modal{background:#fff;border-radius:16px;max-width:500px;width:90%;max-height:80vh;overflow:auto}
+.modal-header{display:flex;justify-content:space-between;align-items:center;padding:20px 20px 0;border-bottom:1px solid #e2ddd6}
+.modal-header h3{margin:0;font-size:19px;font-weight:700}
+.modal-header button{background:none;border:none;font-size:24px;cursor:pointer;padding:0;margin:0}
+.modal-body{padding:20px}
+.modal-actions{display:flex;gap:10px;padding:0 20px 20px}
 .sec-hdr{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:${T.muted};padding:18px 14px 6px}
 .pg{padding-bottom:20px}
 .sbox{background:${T.card};border-radius:14px;padding:16px;box-shadow:${T.sh};text-align:center}
@@ -115,6 +122,10 @@ html,body{font-family:'Sarabun',sans-serif;background:${T.bg};color:${T.txt};fon
 `;
 
 // ══════════════════════════════════════════════
+//  COMPONENTS
+// ══════════════════════════════════════════════
+
+// ══════════════════════════════════════════════
 //  HELPERS
 // ══════════════════════════════════════════════
 const fmt = n => n == null ? "—" : Number(n).toLocaleString("th-TH") + " ฿";
@@ -127,7 +138,7 @@ const uid = p => `${p}${Date.now()}`;
 // ══════════════════════════════════════════════
 const shRead   = sh => fetch(`${SCRIPT_URL}?action=read&sheet=${encodeURIComponent(sh)}`).then(r=>r.json()).then(d=>d.rows||[]).catch(()=>[]);
 const shAppend = (sh,row) => fetch(SCRIPT_URL,{method:"POST",body:JSON.stringify({action:"append",sheet:sh,row})}).then(r=>r.json()).catch(()=>({ok:false}));
-const shUpdate = (sh,id,row) => fetch(SCRIPT_URL,{method:"POST",body:JSON.stringify({action:"update",sheet:sh,id,row})}).then(r=>r.json()).catch(()=>({ok:false}));
+const shUpdate = (sh,id,row) => {console.log("shUpdate:", {action:"update",sheet:sh,id,row}); return fetch(SCRIPT_URL,{method:"POST",body:JSON.stringify({action:"update",sheet:sh,id,row})}).then(r=>r.json()).catch(()=>({ok:false}));};
 const shDelete = (sh,id) => fetch(SCRIPT_URL,{method:"POST",body:JSON.stringify({action:"delete",sheet:sh,id})}).then(r=>r.json()).catch(()=>({ok:false}));
 
 // ══════════════════════════════════════════════
@@ -173,10 +184,15 @@ const MOCK = {
 // ══════════════════════════════════════════════
 function Modal({title,onClose,children}){
   return(
-    <div className="mover" onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div className="mbox">
-        <div className="mt">{title}<button className="mcl" onClick={onClose}>✕</button></div>
-        {children}
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>{title}</h3>
+          <button onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">
+          {children}
+        </div>
       </div>
     </div>
   );
@@ -244,9 +260,31 @@ function parseCSV(text){
   });
 }
 
-async function bulkAppend(sheet,rows){
-  for(const row of rows){
-    await shAppend(sheet,row);
+async function bulkAppend(sheet,items){
+  for(const item of items){
+    if(typeof item === 'object' && item.type === 'tenant'){
+      if (item.action === 'update') {
+        await shUpdate(sheet, item.id, item.data);
+      } else {
+        await shAppend(sheet, item.data);
+      }
+      // อัปเดตสถานะห้องใหม่เป็น occupied
+      await shUpdate(SH.rooms, item.roomId, item.roomData);
+      // ถ้ามีห้องเก่าและเปลี่ยนห้อง ให้อัปเดตห้องเก่าเป็น vacant
+      if (item.oldRoomId && item.oldRoomId !== item.roomId) {
+        const oldRoom = data.rooms.find(r => r.id === item.oldRoomId);
+        if (oldRoom) {
+          const oldRoomData = [oldRoom.id, oldRoom.roomNumber, oldRoom.floor, oldRoom.type, oldRoom.rent, "vacant", "", oldRoom.waterRate, oldRoom.electricRate];
+          await shUpdate(SH.rooms, item.oldRoomId, oldRoomData);
+        }
+      }
+    } else {
+      if (item.action === 'update') {
+        await shUpdate(sheet, item.id, item.data);
+      } else {
+        await shAppend(sheet, item.data);
+      }
+    }
   }
 }
 
@@ -254,56 +292,185 @@ async function bulkAppend(sheet,rows){
 //  PAGE: DASHBOARD
 // ══════════════════════════════════════════════
 function Dashboard({data}){
-  const occupied=data.rooms.filter(r=>r.status==="occupied").length;
-  const vacant=data.rooms.filter(r=>r.status==="vacant").length;
-  const totInc=data.income.reduce((s,i)=>s+Number(i.amount||0),0);
-  const totExp=data.expense.reduce((s,e)=>s+Number(e.amount||0),0);
-  const profit=totInc-totExp;
+  const today = new Date();
+  const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0,10);
+  const todayStr = today.toISOString().slice(0,10);
 
-  const accSum=data.accounts.map(a=>({
-    ...a,
-    inc: data.income.filter(i=>i.accountId===a.id).reduce((s,i)=>s+Number(i.amount||0),0),
-    exp: data.expense.filter(e=>e.accountId===a.id).reduce((s,e)=>s+Number(e.amount||0),0),
-  }));
+  const [dateFrom, setDateFrom] = useState(firstOfMonth);
+  const [dateTo, setDateTo]     = useState(todayStr);
+  const [filterAcc, setFilterAcc] = useState("all");
+
+  // แปลง date string ทั้ง dd/mm/yyyy และ yyyy-mm-dd → Date object
+  function parseDate(s){
+    if(!s) return null;
+    if(s.includes("-")) return new Date(s);
+    const [d,m,y] = s.split("/");
+    // ปีพุทธศักราช → คริสต์ศักราช
+    const yr = Number(y) > 2400 ? Number(y) - 543 : Number(y);
+    return new Date(yr, Number(m)-1, Number(d));
+  }
+
+  const from = parseDate(dateFrom);
+  const to   = parseDate(dateTo);
+  to && to.setHours(23,59,59);
+
+  function inRange(item){
+    const d = parseDate(item.date);
+    if(!d) return false;
+    if(from && d < from) return false;
+    if(to   && d > to)   return false;
+    return true;
+  }
+
+  const fInc = data.income.filter(i => inRange(i) && (filterAcc==="all" || i.accountId===filterAcc));
+  const fExp = data.expense.filter(e => inRange(e) && (filterAcc==="all" || e.accountId===filterAcc));
+
+  const totInc = fInc.reduce((s,i)=>s+Number(i.amount||0),0);
+  const totExp = fExp.reduce((s,e)=>s+Number(e.amount||0),0);
+  const profit = totInc - totExp;
+
+  // รวมตาม category
+  function groupBy(arr){
+    const map = {};
+    arr.forEach(r=>{ const k=r.category||"อื่นๆ"; map[k]=(map[k]||0)+Number(r.amount||0); });
+    return Object.entries(map).sort((a,b)=>b[1]-a[1]);
+  }
+  const incByCat = groupBy(fInc);
+  const expByCat = groupBy(fExp);
+  const maxInc = incByCat[0]?.[1] || 1;
+  const maxExp = expByCat[0]?.[1] || 1;
+
+  const occupied = data.rooms.filter(r=>r.status==="occupied").length;
+  const vacant   = data.rooms.filter(r=>r.status==="vacant").length;
+
+  const BAR_COLORS_INC = ["#1E7E4A","#2A9D5C","#38B26A","#52C97E","#72D994","#96E8AC","#B8F2C8"];
+  const BAR_COLORS_EXP = ["#B91C1C","#D32F2F","#E53935","#EF5350","#F57373","#FF8A80","#FFAB91"];
 
   return(
     <div className="pg">
-      <div className="hero-card">
-        <div style={{fontSize:13,opacity:.75}}>{mth()} · รายรับรวมทุกบัญชี</div>
-        <div style={{fontSize:36,fontWeight:800,margin:"4px 0"}}>{fmt(totInc)}</div>
+      {/* FILTERS */}
+      <div className="card" style={{marginTop:14}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+          <div className="fg" style={{marginBottom:0}}>
+            <label className="fl">วันเริ่มต้น</label>
+            <input className="fi" type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)}/>
+          </div>
+          <div className="fg" style={{marginBottom:0}}>
+            <label className="fl">วันสิ้นสุด</label>
+            <input className="fi" type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)}/>
+          </div>
+        </div>
+        <div className="fg" style={{marginBottom:0}}>
+          <label className="fl">บัญชี</label>
+          <select className="fs" value={filterAcc} onChange={e=>setFilterAcc(e.target.value)}>
+            <option value="all">ทุกบัญชี</option>
+            {data.accounts.map(a=><option key={a.id} value={a.id}>{a.name} · {a.number}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* SUMMARY HERO */}
+      <div className="hero-card" style={{marginTop:10}}>
+        <div style={{fontSize:13,opacity:.75}}>
+          {filterAcc==="all"?"รวมทุกบัญชี":data.accounts.find(a=>a.id===filterAcc)?.name}
+        </div>
+        <div style={{fontSize:34,fontWeight:800,margin:"4px 0"}}>{fmt(totInc)}</div>
         <div style={{display:"flex",gap:20,marginTop:8,flexWrap:"wrap",fontSize:14,opacity:.88}}>
           <span>💸 รายจ่าย {fmt(totExp)}</span>
           <span style={{fontWeight:700,color:profit>=0?"#86EFAC":"#FCA5A5"}}>🏦 กำไร {fmt(profit)}</span>
         </div>
       </div>
 
+      {/* STAT BOXES */}
       <div className="sgrid2">
         <div className="sbox"><div className="snum sg">{occupied}</div><div className="slbl">ห้องมีผู้เช่า</div></div>
         <div className="sbox"><div className="snum sb">{vacant}</div><div className="slbl">ห้องว่าง</div></div>
-        <div className="sbox"><div className="snum sa">{data.income.length}</div><div className="slbl">รายการรายรับ</div></div>
-        <div className="sbox"><div className="snum sr2">{data.expense.length}</div><div className="slbl">รายการรายจ่าย</div></div>
+        <div className="sbox"><div className="snum sa">{fInc.length}</div><div className="slbl">รายการรายรับ</div></div>
+        <div className="sbox"><div className="snum sr2">{fExp.length}</div><div className="slbl">รายการรายจ่าย</div></div>
       </div>
 
+      {/* INCOME CHART */}
+      <div className="sec-hdr">💰 รายรับแยกตามประเภท</div>
+      <div className="card">
+        {incByCat.length===0
+          ? <div className="empty"><div className="empty-ic">📭</div><div>ไม่มีข้อมูลรายรับในช่วงนี้</div></div>
+          : incByCat.map(([cat,amt],i)=>(
+            <div key={cat} style={{marginBottom:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:14,marginBottom:4}}>
+                <span style={{fontWeight:600}}>{cat}</span>
+                <span style={{fontWeight:700,color:T.ok}}>{fmt(amt)}</span>
+              </div>
+              <div style={{background:"#F3F4F6",borderRadius:99,height:12,overflow:"hidden"}}>
+                <div style={{
+                  width:`${(amt/maxInc)*100}%`,height:"100%",
+                  background:BAR_COLORS_INC[i%BAR_COLORS_INC.length],
+                  borderRadius:99,transition:"width .4s ease"
+                }}/>
+              </div>
+              <div style={{fontSize:11,color:T.muted,marginTop:2}}>{((amt/totInc)*100).toFixed(1)}% ของรายรับทั้งหมด</div>
+            </div>
+          ))
+        }
+        {incByCat.length>0&&(
+          <div style={{borderTop:`1px solid ${T.border}`,paddingTop:10,marginTop:4,display:"flex",justifyContent:"space-between",fontWeight:700,fontSize:15}}>
+            <span>รวมรายรับ</span><span style={{color:T.ok}}>{fmt(totInc)}</span>
+          </div>
+        )}
+      </div>
+
+      {/* EXPENSE CHART */}
+      <div className="sec-hdr">💸 รายจ่ายแยกตามประเภท</div>
+      <div className="card">
+        {expByCat.length===0
+          ? <div className="empty"><div className="empty-ic">📭</div><div>ไม่มีข้อมูลรายจ่ายในช่วงนี้</div></div>
+          : expByCat.map(([cat,amt],i)=>(
+            <div key={cat} style={{marginBottom:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:14,marginBottom:4}}>
+                <span style={{fontWeight:600}}>{cat}</span>
+                <span style={{fontWeight:700,color:T.err}}>{fmt(amt)}</span>
+              </div>
+              <div style={{background:"#F3F4F6",borderRadius:99,height:12,overflow:"hidden"}}>
+                <div style={{
+                  width:`${(amt/maxExp)*100}%`,height:"100%",
+                  background:BAR_COLORS_EXP[i%BAR_COLORS_EXP.length],
+                  borderRadius:99,transition:"width .4s ease"
+                }}/>
+              </div>
+              <div style={{fontSize:11,color:T.muted,marginTop:2}}>{((amt/totExp)*100).toFixed(1)}% ของรายจ่ายทั้งหมด</div>
+            </div>
+          ))
+        }
+        {expByCat.length>0&&(
+          <div style={{borderTop:`1px solid ${T.border}`,paddingTop:10,marginTop:4,display:"flex",justifyContent:"space-between",fontWeight:700,fontSize:15}}>
+            <span>รวมรายจ่าย</span><span style={{color:T.err}}>{fmt(totExp)}</span>
+          </div>
+        )}
+      </div>
+
+      {/* ACCOUNT SUMMARY */}
       <div className="sec-hdr">🏦 ยอดแยกตามบัญชี</div>
       <div className="card">
-        {accSum.map(a=>(
-          <div className="li" key={a.id}>
-            <div style={{width:42,height:42,borderRadius:10,background:a.color,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,fontWeight:800,flexShrink:0}}>{a.name[0]}</div>
-            <div className="li-l">
-              <div className="lt">{a.name}</div>
-              <div className="ls">{a.number} · {a.type}</div>
-              <div style={{fontSize:12,marginTop:2}}>
-                รับ <b style={{color:T.ok}}>{fmt(a.inc)}</b>&nbsp;|&nbsp;จ่าย <b style={{color:T.err}}>{fmt(a.exp)}</b>
+        {data.accounts.map(a=>{
+          const inc=fInc.filter(i=>i.accountId===a.id).reduce((s,i)=>s+Number(i.amount||0),0);
+          const exp=fExp.filter(e=>e.accountId===a.id).reduce((s,e)=>s+Number(e.amount||0),0);
+          return(
+            <div className="li" key={a.id}>
+              <div style={{width:42,height:42,borderRadius:10,background:a.color,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,fontWeight:800,flexShrink:0}}>{a.name[0]}</div>
+              <div className="li-l">
+                <div className="lt">{a.name}</div>
+                <div className="ls">{a.number} · {a.type}</div>
+                <div style={{fontSize:12,marginTop:2}}>
+                  รับ <b style={{color:T.ok}}>{fmt(inc)}</b>&nbsp;|&nbsp;จ่าย <b style={{color:T.err}}>{fmt(exp)}</b>
+                </div>
+              </div>
+              <div style={{textAlign:"right",flexShrink:0}}>
+                <div style={{fontWeight:800,fontSize:17,color:inc-exp>=0?T.ok:T.err}}>{fmt(inc-exp)}</div>
+                <div style={{fontSize:11,color:T.muted}}>คงเหลือ</div>
               </div>
             </div>
-            <div style={{textAlign:"right",flexShrink:0}}>
-              <div style={{fontWeight:800,fontSize:17,color:a.inc-a.exp>=0?T.ok:T.err}}>{fmt(a.inc-a.exp)}</div>
-              <div style={{fontSize:11,color:T.muted}}>คงเหลือ</div>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
-
     </div>
   );
 }
@@ -314,27 +481,33 @@ function Dashboard({data}){
 const PALETTE=["#138A36","#4F2D8C","#003087","#C8922A","#B91C1C","#1E40AF","#0F766E","#6D28D9","#B45309","#374151"];
 const ACC_TYPES=["ออมทรัพย์","กระแสรายวัน","ฝากประจำ","อื่นๆ"];
 
-function Accounts({data,onRefresh,showAlert}){
+function Accounts({data,onRefresh,showAlert,setBusyMsg}){
   const empty={name:"",number:"",type:"ออมทรัพย์",color:PALETTE[0],note:""};
   const [modal,setModal]=useState(null);
   const [form,setForm]=useState(empty);
 
   async function save(){
     if(!form.name||!form.number){showAlert("กรุณากรอกชื่อบัญชีและเลขบัญชี","err");return;}
-    if(modal==="edit"){
-      await shUpdate(SH.accounts,form.id,form);
-      showAlert("แก้ไขบัญชีแล้ว ✓");
-    } else {
-      await shAppend(SH.accounts,[uid("A"),form.name,form.number,form.type,form.color,form.note]);
-      showAlert("เพิ่มบัญชีเรียบร้อย ✓");
-    }
-    setModal(null); setForm(empty); onRefresh();
+    setBusyMsg(modal==="edit"?"กำลังแก้ไขบัญชี...":"กำลังเพิ่มบัญชี...");
+    try{
+      if(modal==="edit"){
+        await shUpdate(SH.accounts,form.id,form);
+        showAlert("แก้ไขบัญชีแล้ว ✓");
+      } else {
+        await shAppend(SH.accounts,[uid("A"),form.name,form.number,form.type,form.color,form.note]);
+        showAlert("เพิ่มบัญชีเรียบร้อย ✓");
+      }
+      setModal(null); setForm(empty); onRefresh();
+    }finally{setBusyMsg(null);}
   }
 
   async function del(a){
     if(!window.confirm(`ลบบัญชี "${a.name}" ใช่ไหม?\nรายการที่ผูกกับบัญชีนี้จะยังคงอยู่`)) return;
-    await shDelete(SH.accounts,a.id);
-    showAlert("ลบบัญชีแล้ว"); onRefresh();
+    setBusyMsg("กำลังลบบัญชี...");
+    try{
+      await shDelete(SH.accounts,a.id);
+      showAlert("ลบบัญชีแล้ว"); onRefresh();
+    }finally{setBusyMsg(null);}
   }
 
   return(
@@ -420,82 +593,109 @@ function ImportData({data,onRefresh,showAlert}){
   const [loading,setLoading]=useState(false);
 
   async function importRows(type){
-    const text=source[type].trim();
-    if(!text){showAlert("กรุณาวางข้อมูลก่อนนำเข้า","err");return;}
-    const rows=parseCSV(text);
-    if(rows.length===0){showAlert("ไม่พบข้อมูลให้ดูด","err");return;}
+    const csvText = source[type];
+    if(!csvText.trim()){
+      showAlert("กรุณาวางข้อมูล CSV ก่อนนำเข้า","err");
+      return;
+    }
+
     setLoading(true);
     try{
-      const items=rows.map(raw=>{
-        const row={};
-        Object.keys(raw).forEach(k=>{row[k.trim().toLowerCase().replace(/\s+/g,"")]=raw[k];});
-        const get=(...keys)=>keys.reduce((v,k)=>(v||row[k.toLowerCase().replace(/\s+/g,"")]),"");
-        if(type==="rooms") return [
-          uid("R"),
-          get("roomNumber","roomnumber","room"),
-          get("floor","ชั้น"),
-          get("type","ประเภท" )||"สตูดิโอ",
-          get("rent","ค่าเช่า"),
-          get("status")||"vacant",
-          get("tenantId","tenantid","roomid"),
-          get("waterRate","waterrate")||20,
-          get("electricRate","electricrate")||7,
-        ];
-        if(type==="income") return [
-          uid("I"),
-          get("date"),
-          get("category"),
-          get("description"),
-          get("amount"),
-          get("accountId","accountid"),
-          get("note"),
-          get("roomId","roomid"),
-          get("roomNumber","roomnumber"),
-          get("parkingType","parkingtype"),
-          get("plate"),
-        ];
-        if(type==="expense") return [
-          uid("E"),
-          get("date"),
-          get("category"),
-          get("description"),
-          get("amount"),
-          get("accountId","accountid"),
-          get("note"),
-        ];
-        if(type==="accounts") return [
-          uid("A"),
-          get("name"),
-          get("number"),
-          get("type" )||"ออมทรัพย์",
-          get("color")||PALETTE[0],
-          get("balance")||0,
-        ];
-        if(type==="tenants") {
-          const roomNumber = get("roomNumber","roomnumber").trim();
-          const room = data.rooms.find(r => String(r.roomNumber).trim() === String(roomNumber));
-          if (!room) {
-            showAlert(`ไม่พบห้อง ${roomNumber} ในระบบ`, "err");
-            return null; // ข้ามรายการนี้
+      const rows = parseCSV(csvText);
+      if(rows.length === 0){
+        showAlert("ไม่พบข้อมูลใน CSV","err");
+        return;
+      }
+
+      console.log(`นำเข้า ${type}:`, rows);
+
+      if(type === "rooms"){
+        const items = rows.map(row => {
+          const id = row.id || uid("R");
+          return [id, row.roomNumber, row.floor || "", row.type || "สตูดิโอ", row.rent, row.status || "vacant", row.tenantId || "", row.waterRate || 20, row.electricRate || 7];
+        });
+        await bulkAppend(SH.rooms, items);
+        showAlert(`นำเข้าห้องพัก ${rows.length} ห้อง เรียบร้อย ✓`);
+
+      }else if(type === "income"){
+        const items = rows.map(row => {
+          const id = row.id || uid("I");
+          return [id, row.date, row.category, row.description, row.amount, row.accountId, row.note || "", row.roomId || "", row.roomNumber || "", row.parkingType || "", row.plate || ""];
+        });
+        await bulkAppend(SH.income, items);
+        showAlert(`นำเข้ารายรับ ${rows.length} รายการ เรียบร้อย ✓`);
+
+      }else if(type === "expense"){
+        const items = rows.map(row => {
+          const id = row.id || uid("E");
+          return [id, row.date, row.category, row.description, row.amount, row.accountId, row.note || ""];
+        });
+        await bulkAppend(SH.expense, items);
+        showAlert(`นำเข้ารายจ่าย ${rows.length} รายการ เรียบร้อย ✓`);
+
+      }else if(type === "tenants"){
+        const tenantItems = [];
+        for(const row of rows){
+          const room = data.rooms.find(r => r.roomNumber == row.roomNumber);
+          if(!room){
+            console.warn(`ไม่พบห้อง ${row.roomNumber} สำหรับผู้เช่า ${row.name}`);
+            continue;
           }
-          return [
-            uid("T"),
-            get("name"),
-            get("phone"),
-            room.id, // ใช้ roomId จากระบบ
-            roomNumber,
-            get("moveIn","movein"),
-            get("idCard","idcard"),
-          ];
+
+          const id = row.id || uid("T");
+          const tenantData = [id, row.name, row.phone, room.id, room.roomNumber, row.moveIn || "", row.idCard || ""];
+          const roomData = [room.id, room.roomNumber, room.floor, room.type, room.rent, "occupied", id, room.waterRate, room.electricRate];
+
+          tenantItems.push({
+            type: 'tenant',
+            id: id,
+            data: tenantData,
+            roomId: room.id,
+            roomData: roomData,
+            action: row.id ? 'update' : 'append'
+          });
         }
-        return [];
-      }).filter(item => item !== null); // กรองรายการที่เป็น null ออก
-      await bulkAppend(SH[type],items);
-      showAlert(`นำเข้า ${items.length} รายการสำเร็จ ✓`);
-      setSource(prev=>({...prev,[type]:""}));
+
+        if(tenantItems.length > 0){
+          await bulkAppend(SH.tenants, tenantItems);
+          showAlert(`นำเข้าผู้เช่า ${tenantItems.length} คน เรียบร้อย ✓`);
+        }else{
+          showAlert("ไม่พบผู้เช่าที่สามารถนำเข้าได้","err");
+        }
+      }
+
+      setSource({...source, [type]: ""});
+      onRefresh();
+
+    }catch(e){
+      console.error("นำเข้าข้อมูลล้มเหลว:", e);
+      showAlert("นำเข้าข้อมูลล้มเหลว: " + e.message,"err");
+    }finally{
+      setLoading(false);
+    }
+  }
+
+  async function syncAllData(){
+    setLoading(true);
+    try{
+      const updatedRooms = [];
+      for(const room of data.rooms){
+        const tenant = data.tenants.find(t => t.roomId === room.id);
+        const newStatus = tenant ? "occupied" : "vacant";
+        const newTenantId = tenant ? tenant.id : "";
+        if(room.status !== newStatus || room.tenantId !== newTenantId){
+          await shDelete(SH.rooms, room.id);
+          await shAppend(SH.rooms, [room.id, room.roomNumber, room.floor, room.type, room.rent, newStatus, newTenantId, room.waterRate, room.electricRate]);
+          updatedRooms.push(room.roomNumber);
+        }
+      }
+      const msg = updatedRooms.length > 0
+        ? `ซิงค์เสร็จ ✓ อัปเดต ${updatedRooms.length} ห้อง: ${updatedRooms.join(", ")}`
+        : "ซิงค์เสร็จ ✓ ข้อมูลถูกต้องทั้งหมด";
+      showAlert(msg, "ok");
       onRefresh();
     }catch(e){
-      showAlert("นำเข้าล้มเหลว","err");
+      showAlert("ซิงค์ข้อมูลล้มเหลว: " + e.message, "err");
     }finally{
       setLoading(false);
     }
@@ -531,6 +731,12 @@ function ImportData({data,onRefresh,showAlert}){
         <div className="fg"><label className="fl">รูปแบบ CSV</label><textarea className="fta" value={source.tenants} onChange={e=>setSource({...source,tenants:e.target.value})} placeholder="name,phone,roomNumber,moveIn,idCard&#10;สมชาย ใจดี,081-234-5678,101,01/01/2568,1-2345-67890-12-3"/></div>
         <button className="btn btn-acc btn-full" onClick={()=>importRows("tenants")} disabled={loading}>นำเข้าผู้เช่า</button>
       </div>
+
+      <div className="card">
+        <div className="sec-hdr">ซิงค์ข้อมูลทั้งหมด</div>
+        <div className="fg">ซิงค์สถานะห้องตามผู้เช่าที่มีอยู่ และแก้ไขข้อมูลที่ไม่ตรงกัน</div>
+        <button className="btn btn-pri btn-full" onClick={syncAllData} disabled={loading}>🔄 ซิงค์ข้อมูลทั้งหมด</button>
+      </div>
     </div>
   );
 }
@@ -541,7 +747,7 @@ function ImportData({data,onRefresh,showAlert}){
 const INC_CATS=["ค่าเช่า","ค่ามัดจำ","ค่าที่จอดรถ","ค่าส่วนกลาง","ค่าภาษีสังคม","รายรับอื่นๆ"];
 const EXP_CATS=["ค่าน้ำ","ค่าไฟ","ประกันสังคม","เงินเดือน (ระบุชื่อ)","ค่า รปภ.","ค่า Internet","ค่าภาษีหัก ณ ที่จ่าย","อื่น ๆ (ระบุเพิ่มเติม)"];
 
-function Accounting({data,onRefresh,showAlert}){
+function Accounting({data,onRefresh,showAlert,setBusyMsg}){
   const [tab,setTab]=useState("summary");
   const [modal,setModal]=useState(null);
   const [filterAcc,setFilterAcc]=useState("all");
@@ -562,40 +768,39 @@ function Accounting({data,onRefresh,showAlert}){
     if(!fI.description||!fI.amount||!fI.accountId){showAlert("กรุณากรอกข้อมูลให้ครบ","err");return;}
     if(fI.category==="ค่าเช่า"&&!fI.roomId){showAlert("กรุณาเลือกห้องสำหรับค่าเช่า","err");return;}
     if(fI.category==="ค่าที่จอดรถ"&&!fI.plate){showAlert("กรุณากรอกทะเบียนรถ","err");return;}
-
     const row={
       id: editingIncomeId||uid("I"),
-      date: fI.date,
-      category: fI.category,
-      description: fI.description,
-      amount: fI.amount,
-      accountId: fI.accountId,
-      note: fI.note,
-      roomId: fI.roomId,
-      roomNumber: fI.roomNumber,
+      date: fI.date, category: fI.category, description: fI.description,
+      amount: fI.amount, accountId: fI.accountId, note: fI.note,
+      roomId: fI.roomId, roomNumber: fI.roomNumber,
       parkingType: fI.category==="ค่าที่จอดรถ"?fI.parkingType:"",
       plate: fI.category==="ค่าที่จอดรถ"?fI.plate:"",
     };
-
-    if(editingIncomeId){
-      await shUpdate(SH.income,editingIncomeId,row);
-      showAlert("แก้ไขรายรับเรียบร้อย ✓");
-    } else {
-      await shAppend(SH.income,[row.id,row.date,row.category,row.description,row.amount,row.accountId,row.note,row.roomId,row.roomNumber,row.parkingType,row.plate]);
-      showAlert("บันทึกรายรับเรียบร้อย ✓");
-    }
-    setModal(null); setFI(eI); setEditingIncomeId(""); onRefresh();
+    setBusyMsg(editingIncomeId?"กำลังแก้ไขรายรับ...":"กำลังบันทึกรายรับ...");
+    try{
+      if(editingIncomeId){
+        await shUpdate(SH.income,editingIncomeId,row);
+        showAlert("แก้ไขรายรับเรียบร้อย ✓");
+      } else {
+        await shAppend(SH.income,[row.id,row.date,row.category,row.description,row.amount,row.accountId,row.note,row.roomId,row.roomNumber,row.parkingType,row.plate]);
+        showAlert("บันทึกรายรับเรียบร้อย ✓");
+      }
+      setModal(null); setFI(eI); setEditingIncomeId(""); onRefresh();
+    }finally{setBusyMsg(null);}
   }
   async function saveExpense(){
     if(!fE.description||!fE.amount||!fE.accountId){showAlert("กรุณากรอกข้อมูลให้ครบ","err");return;}
-    if(editingExpenseId){
-      await shUpdate(SH.expense,editingExpenseId,{...fE,id:editingExpenseId});
-      showAlert("แก้ไขรายจ่ายเรียบร้อย ✓");
-    } else {
-      await shAppend(SH.expense,[uid("E"),fE.date,fE.category,fE.description,fE.amount,fE.accountId,fE.note]);
-      showAlert("บันทึกรายจ่ายเรียบร้อย ✓");
-    }
-    setModal(null); setFE(eE); setEditingExpenseId(""); onRefresh();
+    setBusyMsg(editingExpenseId?"กำลังแก้ไขรายจ่าย...":"กำลังบันทึกรายจ่าย...");
+    try{
+      if(editingExpenseId){
+        await shUpdate(SH.expense,editingExpenseId,{...fE,id:editingExpenseId});
+        showAlert("แก้ไขรายจ่ายเรียบร้อย ✓");
+      } else {
+        await shAppend(SH.expense,[uid("E"),fE.date,fE.category,fE.description,fE.amount,fE.accountId,fE.note]);
+        showAlert("บันทึกรายจ่ายเรียบร้อย ✓");
+      }
+      setModal(null); setFE(eE); setEditingExpenseId(""); onRefresh();
+    }finally{setBusyMsg(null);}
   }
 
   async function editIncome(item){
@@ -617,8 +822,11 @@ function Accounting({data,onRefresh,showAlert}){
 
   async function deleteIncome(item){
     if(!window.confirm(`ลบรายการรายรับ "${item.description}" ใช่ไหม?`)) return;
-    await shDelete(SH.income,item.id);
-    showAlert("ลบรายรับแล้ว"); onRefresh();
+    setBusyMsg("กำลังลบรายรับ...");
+    try{
+      await shDelete(SH.income,item.id);
+      showAlert("ลบรายรับแล้ว"); onRefresh();
+    }finally{setBusyMsg(null);}
   }
 
   async function editExpense(item){
@@ -636,8 +844,11 @@ function Accounting({data,onRefresh,showAlert}){
 
   async function deleteExpense(item){
     if(!window.confirm(`ลบรายการรายจ่าย "${item.description}" ใช่ไหม?`)) return;
-    await shDelete(SH.expense,item.id);
-    showAlert("ลบรายจ่ายแล้ว"); onRefresh();
+    setBusyMsg("กำลังลบรายจ่าย...");
+    try{
+      await shDelete(SH.expense,item.id);
+      showAlert("ลบรายจ่ายแล้ว"); onRefresh();
+    }finally{setBusyMsg(null);}
   }
 
   return(
@@ -802,7 +1013,7 @@ function Accounting({data,onRefresh,showAlert}){
                 });
               }}>
                 <option value="">— เลือกห้อง —</option>
-                {data.rooms.map(r=><option key={r.id} value={r.id}>ห้อง {r.roomNumber} {r.status?`(${r.status})`:null}</option>)}
+                {data.rooms.map((r, index)=><option key={index} value={r.id}>ห้อง {r.roomNumber} {r.status?`(${r.status})`:null}</option>)}
               </select>
             </div>
           )}
@@ -860,40 +1071,77 @@ function Accounting({data,onRefresh,showAlert}){
 // ══════════════════════════════════════════════
 //  PAGE: ROOMS
 // ══════════════════════════════════════════════
-function Rooms({data,onRefresh,showAlert}){
+function Rooms({data,onRefresh,showAlert,setBusyMsg}){
   const empty={roomNumber:"",floor:"",type:"สตูดิโอ",rent:"",waterRate:20,electricRate:7};
   const [modal,setModal]=useState(null);
   const [form,setForm]=useState(empty);
+  const [search,setSearch]=useState("");
   const sL={occupied:"มีผู้เช่า",vacant:"ว่าง",maintenance:"ซ่อม"};
   const sB={occupied:"bg-g",vacant:"bg-gray",maintenance:"bg-r"};
   async function add(){
     if(!form.roomNumber||!form.rent){showAlert("กรุณากรอกเลขห้องและค่าเช่า","err");return;}
-    await shAppend(SH.rooms,[uid("R"),form.roomNumber,form.floor,form.type,form.rent,"vacant","",form.waterRate,form.electricRate]);
-    showAlert("เพิ่มห้องพักเรียบร้อย ✓"); setModal(null); setForm(empty); onRefresh();
+    setBusyMsg("กำลังเพิ่มห้องพัก...");
+    try{
+      await shAppend(SH.rooms,[uid("R"),form.roomNumber,form.floor,form.type,form.rent,"vacant","",form.waterRate,form.electricRate]);
+      showAlert("เพิ่มห้องพักเรียบร้อย ✓"); setModal(null); setForm(empty); await onRefresh();
+    }finally{setBusyMsg(null);}
   }
   async function edit(){
     if(!form.roomNumber||!form.rent){showAlert("กรุณากรอกเลขห้องและค่าเช่า","err");return;}
-    // ลบแล้วเพิ่มใหม่แทนการ update (รักษา ID เดิม)
-    await shDelete(SH.rooms,form.id);
-    await shAppend(SH.rooms,[form.id,form.roomNumber,form.floor,form.type,form.rent,form.status||"vacant",form.tenantId||"",form.waterRate||20,form.electricRate||7]);
-    showAlert("แก้ไขห้องพักเรียบร้อย ✓"); setModal(null); setForm(empty); onRefresh();
+    setBusyMsg("กำลังบันทึกห้องพัก...");
+    try{
+      await shDelete(SH.rooms,form.id);
+      await shAppend(SH.rooms,[form.id,form.roomNumber,form.floor,form.type,form.rent,form.status||"vacant",form.tenantId||"",form.waterRate||20,form.electricRate||7]);
+      showAlert("แก้ไขห้องพักเรียบร้อย ✓"); setModal(null); setForm(empty); await onRefresh();
+    }finally{setBusyMsg(null);}
   }
   async function del(){
-    if(!confirm(`ต้องการลบห้อง ${modal.roomNumber} ใช่หรือไม่?`)) return;
-    await shDelete(SH.rooms,modal.id);
-    showAlert("ลบห้องพักเรียบร้อย ✓"); setModal(null); onRefresh();
+    if(!confirm("ต้องการลบห้องพักนี้หรือไม่?")) return;
+    setBusyMsg("กำลังลบห้องพัก...");
+    try{
+      await shDelete(SH.rooms,modal.id);
+      showAlert("ลบห้องพักเรียบร้อย ✓"); setModal(null); await onRefresh();
+    }finally{setBusyMsg(null);}
   }
+  async function syncRoomStatus(){
+    setBusyMsg("กำลังซิงค์สถานะห้อง...");
+    try{
+      let updated = 0;
+      for(const room of data.rooms){
+        const hasTenant = data.tenants.some(t => t.roomId === room.id);
+        const shouldBeOccupied = hasTenant && room.status !== "occupied";
+        const shouldBeVacant = !hasTenant && room.status === "occupied";
+        if(shouldBeOccupied || shouldBeVacant){
+          const newStatus = hasTenant ? "occupied" : "vacant";
+          const newTenantId = hasTenant ? data.tenants.find(t => t.roomId === room.id)?.id || "" : "";
+          await shUpdate(SH.rooms, room.id, [room.roomNumber, room.floor, room.type, room.rent, newStatus, newTenantId, room.waterRate, room.electricRate]);
+          updated++;
+        }
+      }
+      showAlert(`ซิงค์สถานะห้องเรียบร้อย ✓ (${updated} ห้อง)`, updated > 0 ? "ok" : "info");
+      onRefresh();
+    }finally{setBusyMsg(null);}
+  }
+  const filteredRooms = data.rooms
+    .filter(r => !search || r.roomNumber.toString().includes(search) || r.type.toLowerCase().includes(search.toLowerCase()) || sL[r.status].includes(search))
+    .sort((a,b)=>Number(a.roomNumber)-Number(b.roomNumber));
   return(
     <div className="pg">
       <div style={{padding:"14px 14px 0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div style={{fontSize:19,fontWeight:700,color:T.pri}}>ห้องพัก ({data.rooms.length} ห้อง)</div>
-        <button className="btn btn-pri btn-sm" onClick={()=>setModal("add")}>+ เพิ่มห้อง</button>
+        <div style={{fontSize:19,fontWeight:700,color:T.pri}}>ห้องพัก ({filteredRooms.length} ห้อง)</div>
+        <div style={{display:"flex",gap:8}}>
+          <button className="btn btn-acc btn-sm" onClick={syncRoomStatus}>🔄 ซิงค์สถานะ</button>
+          <button className="btn btn-pri btn-sm" onClick={()=>setModal("add")}>+ เพิ่มห้อง</button>
+        </div>
+      </div>
+      <div style={{padding:"0 14px 14px"}}>
+        <input type="text" className="fi" placeholder="ค้นหาเลขห้อง ประเภท หรือสถานะ..." value={search} onChange={e=>setSearch(e.target.value)} style={{width:"100%"}}/>
       </div>
       <div className="rgrid">
-        {data.rooms.map(r=>{
+        {filteredRooms.map((r, index)=>{
           const t=data.tenants.find(t=>t.roomId===r.id);
           return(
-            <div key={r.id} className={`rc ${r.status}`} onClick={()=>setModal(r)}>
+            <div key={index} className={`rc ${r.status}`} onClick={()=>setModal(r)}>
               <div className="rn">🚪 {r.roomNumber}</div>
               <div className="rt">{t?t.name:"—"}</div>
               <div className="rr">{fmt(r.rent)}/เดือน</div>
@@ -956,7 +1204,7 @@ function Rooms({data,onRefresh,showAlert}){
 // ══════════════════════════════════════════════
 //  PAGE: BILLS
 // ══════════════════════════════════════════════
-function Bills({data,onRefresh,showAlert}){
+function Bills({data,onRefresh,showAlert,setBusyMsg}){
   const [tab,setTab]=useState("unpaid");
   const [modal,setModal]=useState(null);
   const [form,setForm]=useState({roomId:"",waterPrev:"",waterCurr:"",electricPrev:"",electricCurr:"",extraFee:0});
@@ -974,16 +1222,22 @@ function Bills({data,onRefresh,showAlert}){
   }
   async function createBill(){
     if(!calc) return;
-    const mn=new Date().toLocaleDateString("th-TH",{month:"long",year:"numeric"});
-    const ten=data.tenants.find(t=>t.roomId===form.roomId);
-    await shAppend(SH.bills,[uid("B"),calc.room.roomNumber,ten?.name||"—",mn,calc.room.rent,calc.wc,calc.ec,form.extraFee||0,calc.tot,"unpaid","",""]);
-    showAlert("สร้างบิลเรียบร้อย ✓"); setModal(null); setCalc(null); onRefresh();
+    setBusyMsg("กำลังสร้างบิล...");
+    try{
+      const mn=new Date().toLocaleDateString("th-TH",{month:"long",year:"numeric"});
+      const ten=data.tenants.find(t=>t.roomId===form.roomId);
+      await shAppend(SH.bills,[uid("B"),calc.room.roomNumber,ten?.name||"—",mn,calc.room.rent,calc.wc,calc.ec,form.extraFee||0,calc.tot,"unpaid","",""]);
+      showAlert("สร้างบิลเรียบร้อย ✓"); setModal(null); setCalc(null); onRefresh();
+    }finally{setBusyMsg(null);}
   }
   async function confirmPay(){
     if(!payAcc){showAlert("กรุณาเลือกบัญชีที่รับเงิน","err");return;}
-    const d=new Date().toLocaleDateString("th-TH");
-    await shUpdate(SH.bills,payBill.id,{...payBill,status:"paid",paidDate:d,accountId:payAcc});
-    showAlert(`รับชำระห้อง ${payBill.roomNumber} แล้ว ✓`); setPayBill(null); setPayAcc(""); onRefresh();
+    setBusyMsg("กำลังบันทึกการชำระเงิน...");
+    try{
+      const d=new Date().toLocaleDateString("th-TH");
+      await shUpdate(SH.bills,payBill.id,{...payBill,status:"paid",paidDate:d,accountId:payAcc});
+      showAlert(`รับชำระห้อง ${payBill.roomNumber} แล้ว ✓`); setPayBill(null); setPayAcc(""); onRefresh();
+    }finally{setBusyMsg(null);}
   }
 
   return(
@@ -1082,25 +1336,91 @@ function Bills({data,onRefresh,showAlert}){
 // ══════════════════════════════════════════════
 //  PAGE: TENANTS
 // ══════════════════════════════════════════════
-function Tenants({data,onRefresh,showAlert}){
+function Tenants({data,onRefresh,showAlert,setBusyMsg}){
   const empty={name:"",phone:"",idCard:"",roomId:"",moveIn:""};
   const [modal,setModal]=useState(null);
   const [form,setForm]=useState(empty);
+  const [origTenant,setOrigTenant]=useState(null);
+  const [search,setSearch]=useState("");
   async function add(){
     if(!form.name||!form.phone||!form.roomId){showAlert("กรุณากรอกข้อมูลให้ครบ","err");return;}
     const room=data.rooms.find(r=>r.id===form.roomId);
-    await shAppend(SH.tenants,[uid("T"),form.name,form.phone,form.roomId,room?.roomNumber||"",form.moveIn,form.idCard]);
-    showAlert("เพิ่มผู้เช่าเรียบร้อย ✓"); setModal(null); setForm(empty); onRefresh();
+    if(!room){showAlert("ไม่พบข้อมูลห้องที่เลือก","err");return;}
+    if(room.status==="occupied"){showAlert("ห้องพักนี้มีผู้เช่าแล้ว","err");return;}
+    setBusyMsg("กำลังเพิ่มผู้เช่า...");
+    try{
+      const tenantId = uid("T");
+      await shAppend(SH.tenants,[tenantId,form.name,form.phone,form.roomId,room.roomNumber||"",form.moveIn,form.idCard]);
+      await shDelete(SH.rooms,room.id);
+      await shAppend(SH.rooms,[room.id,room.roomNumber,room.floor,room.type,room.rent,"occupied",tenantId,room.waterRate,room.electricRate]);
+      showAlert("เพิ่มผู้เช่าเรียบร้อย ✓"); setModal(null); setForm(empty); await onRefresh();
+    }catch(e){
+      showAlert("เพิ่มผู้เช่าล้มเหลว: "+e.message,"err");
+    }finally{setBusyMsg(null);}
   }
+  async function edit(){
+    if(!form.name||!form.phone||!form.roomId){showAlert("กรุณากรอกข้อมูลให้ครบ","err");return;}
+    const room=data.rooms.find(r=>r.id===form.roomId);
+    const oldRoom=data.rooms.find(r=>r.id===origTenant.roomId);
+    if(!room){showAlert("ไม่พบข้อมูลห้องที่เลือก","err");return;}
+    if(!oldRoom){showAlert("ไม่พบข้อมูลห้องเดิม","err");return;}
+    // ถ้าเปลี่ยนห้อง ตรวจสอบว่าห้องใหม่ว่างอยู่
+    if(form.roomId !== origTenant.roomId && room.status==="occupied"){
+      showAlert("ห้องพักนี้มีผู้เช่าแล้ว","err");return;
+    }
+    setBusyMsg("กำลังบันทึกข้อมูลผู้เช่า...");
+    try{
+      // บันทึกข้อมูลผู้เช่า
+      await shDelete(SH.tenants,form.id);
+      await shAppend(SH.tenants,[form.id,form.name,form.phone,form.roomId,room.roomNumber||"",form.moveIn,form.idCard]);
+      // อัปเดตสถานะห้องด้วย delete+append (วิธีเดียวกับ Rooms)
+      if(form.roomId !== origTenant.roomId){
+        // เปลี่ยนห้อง: ห้องเก่า → vacant
+        await shDelete(SH.rooms,oldRoom.id);
+        await shAppend(SH.rooms,[oldRoom.id,oldRoom.roomNumber,oldRoom.floor,oldRoom.type,oldRoom.rent,"vacant","",oldRoom.waterRate,oldRoom.electricRate]);
+        // ห้องใหม่ → occupied
+        await shDelete(SH.rooms,room.id);
+        await shAppend(SH.rooms,[room.id,room.roomNumber,room.floor,room.type,room.rent,"occupied",form.id,room.waterRate,room.electricRate]);
+      } else {
+        // ห้องเดิม → occupied (แน่ใจว่าถูกต้อง)
+        await shDelete(SH.rooms,room.id);
+        await shAppend(SH.rooms,[room.id,room.roomNumber,room.floor,room.type,room.rent,"occupied",form.id,room.waterRate,room.electricRate]);
+      }
+      showAlert("แก้ไขผู้เช่าเรียบร้อย ✓"); setModal(null); setForm(empty); await onRefresh();
+    }catch(e){
+      showAlert("แก้ไขผู้เช่าล้มเหลว: "+e.message,"err");
+    }finally{setBusyMsg(null);}
+  }
+  async function del(){
+    if(!confirm("ต้องการลบผู้เช่านี้หรือไม่?")) return;
+    // อัปเดตสถานะห้องเป็น vacant - ใช้ array format
+    const room=data.rooms.find(r=>r.id===modal.roomId);
+    if(!room){showAlert("ไม่พบข้อมูลห้อง","err");return;}
+    setBusyMsg("กำลังลบผู้เช่า...");
+    try{
+      await shDelete(SH.rooms,room.id);
+      await shAppend(SH.rooms,[room.id,room.roomNumber,room.floor,room.type,room.rent,"vacant","",room.waterRate,room.electricRate]);
+      await shDelete(SH.tenants,modal.id);
+      showAlert("ลบผู้เช่าเรียบร้อย ✓"); setModal(null); await onRefresh();
+    }catch(e){
+      showAlert("ลบผู้เช่าล้มเหลว: "+e.message,"err");
+    }finally{setBusyMsg(null);}
+  }
+  const filteredTenants = data.tenants
+    .filter(t => !search || t.name.toLowerCase().includes(search.toLowerCase()) || t.roomNumber.toString().includes(search))
+    .sort((a,b) => Number(a.roomNumber) - Number(b.roomNumber));
   return(
     <div className="pg">
       <div style={{padding:"14px 14px 0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div style={{fontSize:19,fontWeight:700,color:T.pri}}>ผู้เช่า ({data.tenants.length} คน)</div>
+        <div style={{fontSize:19,fontWeight:700,color:T.pri}}>ผู้เช่า ({filteredTenants.length} คน)</div>
         <button className="btn btn-pri btn-sm" onClick={()=>setModal("add")}>+ เพิ่มผู้เช่า</button>
       </div>
+      <div style={{padding:"0 14px 14px"}}>
+        <input type="text" className="fi" placeholder="ค้นหาชื่อหรือเลขห้อง..." value={search} onChange={e=>setSearch(e.target.value)} style={{width:"100%"}}/>
+      </div>
       <div className="card">
-        {data.tenants.length===0&&<div className="empty"><div className="empty-ic">👤</div><div>ยังไม่มีผู้เช่า</div></div>}
-        {data.tenants.map(t=>(
+        {filteredTenants.length===0&&<div className="empty"><div className="empty-ic">👤</div><div>ไม่พบผู้เช่า</div></div>}
+        {filteredTenants.map(t=>(
           <div className="li" key={t.id} onClick={()=>setModal(t)} style={{cursor:"pointer"}}>
             <div style={{width:44,height:44,borderRadius:"50%",background:T.pri,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,fontWeight:700,flexShrink:0}}>{t.name[0]}</div>
             <div className="li-l">
@@ -1130,6 +1450,25 @@ function Tenants({data,onRefresh,showAlert}){
           </div>
         </Modal>
       )}
+      {modal==="edit"&&(
+        <Modal title="👤 แก้ไขผู้เช่า" onClose={()=>setModal(null)}>
+          <div className="fg"><label className="fl">ชื่อ-นามสกุล *</label><input className="fi" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="สมชาย ใจดี"/></div>
+          <div className="fg"><label className="fl">เบอร์โทร *</label><input className="fi" type="tel" value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})} placeholder="081-234-5678"/></div>
+          <div className="fg"><label className="fl">เลขบัตรประชาชน</label><input className="fi" value={form.idCard} onChange={e=>setForm({...form,idCard:e.target.value})} placeholder="1-2345-67890-12-3"/></div>
+          <div className="fg">
+            <label className="fl">ห้องพัก *</label>
+            <select className="fs" value={form.roomId} onChange={e=>setForm({...form,roomId:e.target.value})}>
+              <option value="">— เลือกห้อง —</option>
+              {data.rooms.filter(r=>r.status==="vacant"||r.id===form.roomId).map(r=><option key={r.id} value={r.id}>ห้อง {r.roomNumber} ({r.type}) — {fmt(r.rent)}/เดือน</option>)}
+            </select>
+          </div>
+          <div className="fg"><label className="fl">วันที่เข้าอยู่</label><input className="fi" type="date" value={form.moveIn} onChange={e=>setForm({...form,moveIn:e.target.value})}/></div>
+          <div className="btn-row">
+            <button className="btn btn-out" onClick={()=>setModal(null)}>ยกเลิก</button>
+            <button className="btn btn-pri" onClick={edit}>บันทึก</button>
+          </div>
+        </Modal>
+      )}
       {modal&&modal.id&&(
         <Modal title={`👤 ${modal.name}`} onClose={()=>setModal(null)}>
           <div style={{fontSize:16,lineHeight:2.2}}>
@@ -1137,7 +1476,10 @@ function Tenants({data,onRefresh,showAlert}){
             <div>📅 เข้าอยู่: {modal.moveIn}</div>
             {modal.idCard&&<div>🪪 บัตร: {modal.idCard}</div>}
           </div>
-          <button className="btn btn-out btn-full" style={{marginTop:14}} onClick={()=>setModal(null)}>ปิด</button>
+          <div className="btn-row">
+            <button className="btn btn-acc" onClick={()=>{setOrigTenant(modal);setForm(modal);setModal("edit")}}>แก้ไข</button>
+            <button className="btn btn-err" onClick={del}>ลบ</button>
+          </div>
         </Modal>
       )}
     </div>
@@ -1151,16 +1493,23 @@ export default function App(){
   const [page,setPage]=useState("dashboard");
   const [data,setData]=useState(MOCK);
   const [loading,setLoading]=useState(false);
+  const [busyMsg,setBusyMsg]=useState(null);
   const [alertState,setAlertState]=useState(null);
 
   async function load(){
     if(IS_MOCK) return;
     setLoading(true);
     try{
-      const [rooms,tenants,income,expense,accounts]=await Promise.all([
+      const [roomsRaw,tenantsRaw,incomeRaw,expenseRaw,accountsRaw]=await Promise.all([
         shRead(SH.rooms),shRead(SH.tenants),
         shRead(SH.income),shRead(SH.expense),shRead(SH.accounts),
       ]);
+      // Filter duplicates by id
+      const rooms = roomsRaw.filter((r, i, arr) => arr.findIndex(x => x.id === r.id) === i);
+      const tenants = tenantsRaw.filter((t, i, arr) => arr.findIndex(x => x.id === t.id) === i);
+      const income = incomeRaw.filter((inc, i, arr) => arr.findIndex(x => x.id === inc.id) === i);
+      const expense = expenseRaw.filter((exp, i, arr) => arr.findIndex(x => x.id === exp.id) === i);
+      const accounts = accountsRaw.filter((acc, i, arr) => arr.findIndex(x => x.id === acc.id) === i);
       setData({rooms,tenants,income,expense,accounts});
     }finally{setLoading(false);}
   }
@@ -1180,7 +1529,7 @@ export default function App(){
     {id:"accounting",ic:"📊",lbl:"บัญชี"},
     {id:"accounts",ic:"🏦",lbl:"ธนาคาร"},
   ];
-  const P={data,onRefresh:load,showAlert};
+  const P={data,onRefresh:load,showAlert,setBusyMsg};
 
   return(
     <>
@@ -1214,10 +1563,10 @@ export default function App(){
           ))}
         </nav>
 
-        {loading&&(
+        {(loading||busyMsg)&&(
           <div className="spin-wrap">
             <div className="spin"/>
-            <div style={{fontSize:17,color:T.pri}}>กำลังโหลด...</div>
+            <div style={{fontSize:17,color:T.pri}}>{busyMsg||"กำลังโหลด..."}</div>
           </div>
         )}
       </div>
